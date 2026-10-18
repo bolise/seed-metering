@@ -1,0 +1,218 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>종자파종기 배출 감지 - 색상 검출 프로토타입</title>
+<style>
+:root{font-family:system-ui,-apple-system,"Malgun Gothic",sans-serif;color:#17212b;background:#f4f6f8}
+*{box-sizing:border-box}body{margin:0;padding:12px;max-width:1000px;margin-inline:auto}
+h1{font-size:1.3rem;margin:0 0 4px}.muted{color:#64748b;font-size:.88rem;line-height:1.45}
+.card{background:white;border:1px solid #dbe2e8;border-radius:14px;padding:13px;margin:11px 0}
+.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px}
+label{display:block;font-size:.88rem;font-weight:650;margin-bottom:5px}
+input,select,button{font:inherit;border-radius:9px;padding:10px;border:1px solid #cbd5e1;width:100%;background:white}
+button{font-weight:700;cursor:pointer;background:#155e75;color:white;border-color:#155e75}button.secondary{background:white;color:#155e75}
+button:disabled{opacity:.45;cursor:not-allowed}.actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:9px}
+#video{display:block;width:100%;max-height:55vh;background:#111;border-radius:10px}
+#calCanvas{width:100%;display:block;background:#111;border-radius:10px;touch-action:manipulation}
+.stats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:7px}.stat{background:#eef6f8;border-radius:10px;padding:9px}.stat span{font-size:.76rem;color:#475569;display:block}.stat strong{font-size:1.1rem}
+.tablewrap{overflow:auto;max-height:400px}table{border-collapse:collapse;width:100%;font-size:.88rem}th,td{border-bottom:1px solid #e2e8f0;padding:7px;text-align:left;white-space:nowrap}th{position:sticky;top:0;background:#f8fafc}
+.ok{color:#087443;font-weight:700}.miss{color:#b91c1c;font-weight:700}.uncertain{color:#a16207;font-weight:700}
+.notice{background:#fff7ed;border:1px solid #fed7aa;border-radius:10px;padding:10px;font-size:.87rem;line-height:1.5}
+.pill{display:inline-block;background:#e0f2fe;color:#075985;border-radius:999px;padding:3px 8px;font-size:.78rem}
+@media(max-width:500px){body{padding:9px}.card{padding:10px}.stats strong{font-size:1rem}}
+</style>
+</head>
+<body>
+<h1>종자파종기 배출 감지</h1>
+<div class="muted">측면 낙하 촬영 · 색상 보정 + 가상 검출선 · 시험용 프로토타입</div>
+
+<div class="card">
+ <div class="grid">
+  <div><label for="mode">종료 기준</label><select id="mode"><option value="both">시간 또는 횟수 중 먼저 도달</option><option value="time">시간 기준</option><option value="count">목표 횟수 기준</option></select></div>
+  <div><label for="duration">실험 시간 (초)</label><input id="duration" type="number" min="1" max="3600" value="10"></div>
+  <div><label for="target">목표 배출 횟수</label><input id="target" type="number" min="1" max="10000" value="300"></div>
+  <div><label for="colorTol">색상 허용 오차</label><input id="colorTol" type="number" min="15" max="180" value="65"></div>
+  <div><label for="minArea">최소 종자 후보 면적(px)</label><input id="minArea" type="number" min="1" max="500" value="3"></div>
+  <div><label for="maxArea">최대 종자 후보 면적(px)</label><input id="maxArea" type="number" min="2" max="2000" value="180"></div>
+  <div><label for="lineY">검출선 높이(영상 비율 %)</label><input id="lineY" type="number" min="10" max="90" value="55"></div>
+  <div><label for="refractory">중복 방지 시간(ms)</label><input id="refractory" type="number" min="50" max="1000" value="120"></div>
+ </div>
+ <div class="actions"><button id="open">카메라 켜기</button><button id="close" class="secondary" disabled>카메라 끄기</button></div>
+</div>
+
+<div class="card">
+ <label>1단계 — 카메라 위치 확인</label>
+ <video id="video" playsinline autoplay muted></video>
+ <div class="actions"><button id="capture" disabled>보정용 화면 캡처</button><button id="start" disabled>실험 시작</button></div>
+ <p class="muted">배출구 옆에서 종자가 떨어지는 모습을 촬영하세요. 휴대폰과 배출구를 고정하고, 종자 경로가 배경과 뚜렷하게 구분되도록 하세요.</p>
+</div>
+
+<div class="card">
+ <label>2단계 — 종자 색상 보정</label>
+ <canvas id="calCanvas" width="640" height="360"></canvas>
+ <div class="actions"><button id="calMode" class="secondary" disabled>종자 색상 선택 모드</button><button id="useColor" disabled>선택한 색상 적용</button></div>
+ <p id="calStatus" class="muted">화면을 캡처한 뒤, 캡처 이미지에서 종자 몸통을 눌러 대표 색상을 선택하세요. 종자 가장자리나 반짝이는 하이라이트는 피하세요.</p>
+ <p>선택한 색상: <span id="swatch" class="pill">미설정</span></p>
+</div>
+
+<div class="card">
+ <label>3단계 — 실험 및 검출 상태</label>
+ <div class="stats">
+  <div class="stat"><span>검출 이벤트</span><strong id="events">0</strong></div>
+  <div class="stat"><span>추정 주기</span><strong id="period">-</strong></div>
+  <div class="stat"><span>추정 속도</span><strong id="rate">-</strong></div>
+ </div>
+ <div class="actions"><button id="stop" class="secondary" disabled>실험 종료</button><button id="csv" class="secondary">CSV 저장(엑셀용)</button></div>
+ <p id="status" class="muted">카메라를 켜고 색상 보정을 진행하세요. 카메라 접근은 HTTPS 또는 localhost에서 가능합니다.</p>
+ <p id="summary" class="muted">결과 요약이 여기에 표시됩니다.</p>
+ <div class="tablewrap"><table><thead><tr><th>슬롯</th><th>예상 시각(s)</th><th>검출 시각(s)</th><th>판정</th></tr></thead><tbody id="rows"></tbody></table></div>
+ <div class="actions"><button id="clear" class="secondary">결과 초기화</button><button id="downloadLog" class="secondary">검출 이벤트 CSV</button></div>
+</div>
+<div class="notice"><b>검증 전 주의:</b> 이 버전은 선택한 색상과 비슷한 픽셀 덩어리를 찾고 중심점의 검출선 통과를 추정하는 프로토타입입니다. 서로 붙은 종자, 빠른 낙하로 인한 흐림, 배경에 같은 색이 있는 경우는 정확히 구분하지 못할 수 있습니다. 실제 시험에 쓰기 전에는 영상과 수동 계수를 비교해 검출률·오검출률을 검증해야 합니다. 브라우저의 프레임 처리 속도도 기기마다 다릅니다.</div>
+
+<script>
+(() => {
+const $=id=>document.getElementById(id);
+const video=$('video'), cal=$('calCanvas'), cctx=cal.getContext('2d',{willReadFrequently:true});
+const proc=document.createElement('canvas'), pctx=proc.getContext('2d',{willReadFrequently:true});
+const work=document.createElement('canvas'), wctx=work.getContext('2d',{willReadFrequently:true});
+let stream=null, running=false, raf=0, startAt=0, snapshot=null, selectedColor=null, appliedColor=null;
+let lastFrame=null, tracks=[], nextTrackId=1, events=[], rows=[], period=null, lastEvent=-Infinity, lastProcess=0;
+const W=240,H=180; proc.width=W;proc.height=H;
+function setStatus(s){$('status').textContent=s}
+function buttons(){ $('open').disabled=!!stream; $('close').disabled=!stream; $('capture').disabled=!stream; $('start').disabled=!stream||!appliedColor||running; $('stop').disabled=!running; $('calMode').disabled=!snapshot; $('useColor').disabled=!selectedColor; }
+async function openCamera(){
+ try{stream=await navigator.mediaDevices.getUserMedia({audio:false,video:{facingMode:{ideal:'environment'},width:{ideal:1280},height:{ideal:720},frameRate:{ideal:30,max:60}}});video.srcObject=stream;await video.play();buttons();setStatus('카메라 준비 완료. 화면을 캡처해 종자 색상을 보정하세요.')}
+ catch(e){setStatus('카메라 오류: '+e.message+'. HTTPS 접속과 카메라 권한을 확인하세요.')}
+}
+function closeCamera(){stopTest(false);if(stream)stream.getTracks().forEach(t=>t.stop());stream=null;video.srcObject=null;buttons();setStatus('카메라가 꺼졌습니다.')}
+function capture(){
+ if(!stream)return;
+ const vw=video.videoWidth||640,vh=video.videoHeight||360;
+ cal.width=vw;cal.height=vh;cctx.drawImage(video,0,0,vw,vh);
+ snapshot=cctx.getImageData(0,0,vw,vh);selectedColor=null;appliedColor=null;
+ $('calStatus').textContent='캡처 이미지에서 종자 몸통의 대표 색상을 눌러 선택하세요.';
+ $('swatch').textContent='미설정';$('swatch').style.background='';buttons();
+}
+function pickColor(ev){
+ if(!snapshot)return;
+ const rect=cal.getBoundingClientRect();
+ const x=Math.max(0,Math.min(snapshot.width-1,Math.floor((ev.clientX-rect.left)/rect.width*snapshot.width)));
+ const y=Math.max(0,Math.min(snapshot.height-1,Math.floor((ev.clientY-rect.top)/rect.height*snapshot.height)));
+ const i=(y*snapshot.width+x)*4,d=snapshot.data;
+ selectedColor=[d[i],d[i+1],d[i+2]];
+ $('swatch').textContent=`RGB ${selectedColor.join(', ')}`;$('swatch').style.background=`rgb(${selectedColor.join(',')})`;
+ $('swatch').style.color=(selectedColor[0]*.299+selectedColor[1]*.587+selectedColor[2]*.114)>145?'#111':'#fff';
+ $('calStatus').textContent='색상을 선택했습니다. 종자 몸통의 대표 색상인지 확인하고 적용하세요.';buttons();
+}
+function applyColor(){if(!selectedColor)return;appliedColor=selectedColor.slice();$('calStatus').textContent='색상 보정 완료. 색상 허용 오차를 조정한 뒤 실험을 시작하세요.';buttons();}
+function distance(r,g,b,c){return Math.sqrt((r-c[0])**2+(g-c[1])**2+(b-c[2])**2)}
+function components(mask){
+ const seen=new Uint8Array(W*H), comps=[], stack=new Int32Array(W*H);
+ for(let p=0;p<mask.length;p++){
+  if(!mask[p]||seen[p])continue;
+  let top=0;stack[top++]=p;seen[p]=1;let area=0,sx=0,sy=0,minx=W,miny=H,maxx=0,maxy=0;
+  while(top){const q=stack[--top],x=q%W,y=(q/W)|0;area++;sx+=x;sy+=y;minx=Math.min(minx,x);maxx=Math.max(maxx,x);miny=Math.min(miny,y);maxy=Math.max(maxy,y);
+   const ns=[x>0?q-1:-1,x<W-1?q+1:-1,y>0?q-W:-1,y<H-1?q+W:-1];
+   for(const n of ns)if(n>=0&&mask[n]&&!seen[n]){seen[n]=1;stack[top++]=n}
+  }
+  const minA=Math.max(1,Number($('minArea').value)||3),maxA=Math.max(minA+1,Number($('maxArea').value)||180);
+  if(area>=minA&&area<=maxA)comps.push({x:sx/area,y:sy/area,area,minx,miny,maxx,maxy});
+ }
+ return comps;
+}
+function processFrame(now){
+ if(!running)return;
+ const t=(now-startAt)/1000;
+ // Process at most around 20 times/s to keep mobile CPU usage manageable.
+ if(now-lastProcess>=45 && video.videoWidth){
+  lastProcess=now;pctx.drawImage(video,0,0,W,H);
+  const frame=pctx.getImageData(0,0,W,H),d=frame.data,mask=new Uint8Array(W*H);
+  const tol=Math.max(15,Math.min(180,Number($('colorTol').value)||65));
+  for(let p=0,j=0;p<W*H;p++,j+=4)if(distance(d[j],d[j+1],d[j+2],appliedColor)<=tol)mask[p]=1;
+  const comps=components(mask);
+  const lineY=H*Math.max(.1,Math.min(.9,(Number($('lineY').value)||55)/100));
+  // Associate current components with nearby previous-frame tracks.
+  const used=new Set();
+  for(const c of comps){
+   let best=null,bd=Infinity;
+   for(const tr of tracks){if(used.has(tr.id))continue;const dt=Math.hypot(c.x-tr.x,c.y-tr.y);if(dt<bd){bd=dt;best=tr}}
+   if(best&&bd<28){
+    used.add(best.id);
+    // Count only downward crossings of the horizontal line.
+    if(best.y<lineY&&c.y>=lineY&&t-best.lastCount>(Number($('refractory').value)||120)/1000){
+      if(t>.15){events.push(t);lastEvent=t;best.lastCount=t;updatePeriod();renderResults()}
+    }
+    best.x=c.x;best.y=c.y;best.missed=0;
+   }else{
+    const tr={id:nextTrackId++,x:c.x,y:c.y,firstY:c.y,lastCount:-Infinity,missed:0};
+    tracks.push(tr);used.add(tr.id);
+   }
+  }
+  tracks=tracks.filter(tr=>{if(!used.has(tr.id))tr.missed++;return tr.missed<3});
+  drawDebug(frame,comps,lineY,mask);
+ }
+ $('events').textContent=events.length;
+ if(period){$('period').textContent=period.toFixed(3)+' s';$('rate').textContent=(1/period).toFixed(2)+'/s · '+(60/period).toFixed(1)+'/min'}
+ else{$('period').textContent='추정 중';$('rate').textContent='추정 중'}
+ const mode=$('mode').value,duration=Math.max(1,Number($('duration').value)||10),target=Math.max(1,Number($('target').value)||300);
+ if((mode!=='count'&&t>=duration)||(mode!=='time'&&events.length>=target)){stopTest(true);return}
+ raf=requestAnimationFrame(processFrame);
+}
+function drawDebug(frame,comps,lineY,mask){
+ // Use a small visual mask preview on the calibration canvas after a snapshot has been taken.
+ if(!snapshot)return;
+ const image=cctx.createImageData(W,H);
+ for(let i=0;i<mask.length;i++){const j=i*4,v=mask[i]?255:18;image.data[j]=mask[i]?20:v;image.data[j+1]=mask[i]?220:v;image.data[j+2]=mask[i]?80:v;image.data[j+3]=255}
+ // Keep the calibration photo intact; debug mask is not painted over it to preserve color sampling.
+}
+function updatePeriod(){
+ if(events.length<5)return;
+ const diffs=[];for(let i=1;i<events.length;i++){let d=events[i]-events[i-1];if(d>.08&&d<3)diffs.push(d)}
+ if(!diffs.length)return;
+ // Estimate base interval from the lower half of observed intervals; missed seeds can create integer multiples.
+ const s=diffs.slice().sort((a,b)=>a-b),cut=s.slice(0,Math.max(2,Math.ceil(s.length*.65))).sort((a,b)=>a-b);
+ period=cut[Math.floor(cut.length/2)];
+}
+function renderResults(){
+ const body=$('rows');body.innerHTML='';rows=[];
+ if(!events.length){$('summary').textContent='아직 검출 이벤트가 없습니다.';return}
+ if(!period||events.length<5){
+  events.forEach((t,i)=>{const r={n:i+1,expected:null,actual:t.toFixed(3),result:'주기 추정 중'};rows.push(r);const tr=document.createElement('tr');tr.innerHTML=`<td>${r.n}</td><td>-</td><td>${r.actual}</td><td class="uncertain">${r.result}</td>`;body.appendChild(tr)});
+  $('summary').textContent=`검출 이벤트 ${events.length}회 · 주기 추정을 위해 추가 이벤트가 필요합니다.`;return;
+ }
+ const tol=.35,first=events[0],last=events[events.length-1],slots=Math.floor((last-first)/period)+1,used=new Set();
+ for(let i=0;i<slots;i++){
+  const expected=first+i*period;let best=-1,bd=Infinity;
+  events.forEach((e,j)=>{if(used.has(j))return;const d=Math.abs(e-expected);if(d<bd){bd=d;best=j}});
+  let actual='',result='누락 추정',cls='miss';
+  if(best>=0&&bd<=period*tol){used.add(best);actual=events[best].toFixed(3);result='정상 추정';cls='ok'}
+  const r={n:i+1,expected,actual,result};rows.push(r);
+  const tr=document.createElement('tr');tr.innerHTML=`<td>${r.n}</td><td>${expected.toFixed(3)}</td><td>${actual||'-'}</td><td class="${cls}">${result}</td>`;body.appendChild(tr);
+ }
+ const normal=rows.filter(r=>r.result==='정상 추정').length,miss=rows.length-normal;
+ $('summary').textContent=`예상 슬롯 ${rows.length}회 · 정상 추정 ${normal}회 · 누락 후보 ${miss}회 · 누락률 ${(100*miss/Math.max(1,rows.length)).toFixed(2)}% (자동 추정치)`;
+}
+function startTest(){
+ if(!stream||!appliedColor)return;
+ events=[];rows=[];tracks=[];nextTrackId=1;period=null;lastFrame=null;lastEvent=-Infinity;lastProcess=0;
+ running=true;startAt=performance.now();buttons();setStatus('실험 중 — 카메라와 파종기를 움직이지 마세요.');$('summary').textContent='실험 중…';raf=requestAnimationFrame(processFrame);
+}
+function stopTest(show){if(!running)return;running=false;cancelAnimationFrame(raf);raf=0;buttons();renderResults();if(show)setStatus('실험 종료. 자동 판정 결과를 검토하고 CSV로 저장하세요.')}
+function saveCsv(data,name){
+ if(!data.length){alert('저장할 데이터가 없습니다.');return}
+ const csv='\uFEFF'+data.map(r=>r.map(v=>'"'+String(v??'').replaceAll('"','""')+'"').join(',')).join('\r\n');
+ const url=URL.createObjectURL(new Blob([csv],{type:'text/csv;charset=utf-8;'}));const a=document.createElement('a');a.href=url;a.download=name;a.click();URL.revokeObjectURL(url);
+}
+$('open').onclick=openCamera;$('close').onclick=closeCamera;$('capture').onclick=capture;$('calCanvas').addEventListener('click',pickColor);
+$('calMode').onclick=()=>{$('calStatus').textContent='캡처 화면에서 종자 몸통의 대표 색상을 눌러 선택하세요.'};
+$('useColor').onclick=applyColor;$('start').onclick=startTest;$('stop').onclick=()=>stopTest(true);
+$('csv').onclick=()=>saveCsv([['슬롯','예상 시각(s)','검출 시각(s)','판정'],...rows.map(r=>[r.n,r.expected==null?'':r.expected.toFixed(3),r.actual,r.result])],'종자파종기_결과표.csv');
+$('downloadLog').onclick=()=>saveCsv([['이벤트 번호','검출 시각(s)'],...events.map((t,i)=>[i+1,t.toFixed(3)])],'종자파종기_검출이벤트.csv');
+$('clear').onclick=()=>{if(running)stopTest(false);events=[];rows=[];tracks=[];period=null;$('events').textContent='0';$('period').textContent='-';$('rate').textContent='-';$('rows').innerHTML='';$('summary').textContent='결과 요약이 여기에 표시됩니다.';setStatus('결과가 초기화되었습니다.')};
+})();
+</script>
+</body>
+</html>
